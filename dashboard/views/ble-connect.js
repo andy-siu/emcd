@@ -1,0 +1,239 @@
+// @ts-check
+
+import van from "../vendor/van-1.6.1.js";
+import {
+  BLE_MODE,
+  bluetoothAvailable,
+  chooseAndConnect,
+  deviceChosen,
+  forgetDevice,
+  onBleStatus,
+  reconnect,
+  rememberSecret,
+  storedSecret,
+  originAllowed,
+} from "../lib/ble-link.js";
+import { BLE_ORIGIN_MESSAGE } from "../lib/ble-origin.js";
+
+// The controls a BLE-served dashboard needs and a wifi-served one does not: a way to pick
+// emcool (Web Bluetooth will only open its chooser from a tap) and somewhere to type the
+// shared secret. Both render nothing unless ../lib/ble-link.js says this page is in
+// BLE mode, so emcool-served dashboard is unchanged.
+
+const { button, div, form, h2, input, label, span } = van.tags;
+
+/** @typedef {import("../lib/ble-link.js").BleStatus} BleStatus */
+
+const bleStatus = van.state(/** @type {BleStatus} */ ("off"));
+const bleDetail = van.state("");
+// Above the listener: onBleStatus calls it synchronously, before later declarations exist.
+const keyVisible = van.state(false);
+const shownKey = van.state("");
+
+if (BLE_MODE) {
+  onBleStatus((status, detail) => {
+    bleStatus.val = status;
+    bleDetail.val = detail;
+    // Settings' "Use saved" stores a key from another view and then connects, which lands here.
+    if (keyVisible.rawVal) {
+      shownKey.val = storedSecret();
+    }
+  });
+}
+
+/** The secret field's id, so the header button can put the cursor in it. */
+const SECRET_FIELD_ID = "ble-secret";
+
+/** Set when a connect was refused for want of a secret; the menu's note says what to do. */
+const secretWanted = van.state(false);
+const entryError = van.state("");
+
+/**
+ * In the header, beside the link dot, until the link is up.
+ * @param {() => void} openMenu opens the menu sheet, where the secret is typed
+ */
+export function BleHeaderButton(openMenu) {
+  if (!BLE_MODE || !originAllowed()) {
+    return span();
+  }
+  return () => (bleStatus.val === "connected" ? span() : BleConnectButton(openMenu));
+}
+
+/** @param {() => void} openMenu */
+export function BleConnectButton(openMenu) {
+  return button({ class: "ble-connect", onclick: () => connectNow(openMenu) }, "Connect");
+}
+
+/** The sheet's Bluetooth section: the secret, the state of the link, and a Connect button. */
+export function BleSection() {
+  if (!BLE_MODE) {
+    return div();
+  }
+  if (!originAllowed()) {
+    return div(h2({ class: "sheet-heading" }, "Bluetooth"), div({ class: "action-note caution" }, BLE_ORIGIN_MESSAGE));
+  }
+  if (!bluetoothAvailable()) {
+    return div(
+      h2({ class: "sheet-heading" }, "Bluetooth"),
+      div(
+        { class: "action-note caution" },
+        "This browser has no Web Bluetooth. On iPhone use Bluefy; on Android or a Mac, Chrome."
+      )
+    );
+  }
+  return div(
+    h2({ class: "sheet-heading" }, "Enter the bike’s Bluetooth key"),
+    // A form, so Return in the field connects and a password manager can offer to keep
+    // the secret. The secret is saved from the form at submit rather than on `change`,
+    // which a Return keypress does not reliably fire first.
+    form(
+      {
+        class: "settings-row",
+        onsubmit: (/** @type {SubmitEvent} */ event) => {
+          event.preventDefault();
+          const field = /** @type {HTMLFormElement} */ (event.target).elements.namedItem("secret");
+          try {
+            rememberSecret(/** @type {HTMLInputElement} */ (field).value);
+            shownKey.val = storedSecret();
+            entryError.val = "";
+            connectNow();
+          } catch (error) {
+            console.log("ble: generated key entry rejected");
+            entryError.val = /** @type {Error} */ (error).message;
+          }
+        },
+      },
+      // Hidden, and fixed: password managers file a secret under a username, and without
+      // one they offer to save it under nothing in particular.
+      input({ type: "text", name: "username", autocomplete: "username", value: "cool-eva", hidden: true }),
+      input({
+        id: SECRET_FIELD_ID,
+        class: "probe-input",
+        type: () => (keyVisible.val ? "text" : "password"),
+        name: "secret",
+        autocomplete: "current-password",
+        autocapitalize: "off",
+        spellcheck: false,
+        placeholder: "Paste or type the bike’s Bluetooth key",
+        value: storedSecret(),
+      }),
+      button({ class: "settings-button", type: "submit" }, () =>
+        bleStatus.val === "connected" ? "Choose another bike" : "Connect this phone"
+      )
+    ),
+    // Each origin keeps its own copy of the key, so after "wrong secret" the rider needs to see
+    // which one this page sends to compare it with their saved copy. Hidden until asked.
+    label(
+      { class: "settings-note settings-check" },
+      input({
+        type: "checkbox",
+        checked: keyVisible,
+        onchange: (/** @type {Event} */ event) => {
+          keyVisible.val = /** @type {HTMLInputElement} */ (event.target).checked;
+          shownKey.val = storedSecret();
+        },
+      }),
+      " Show key"
+    ),
+    // The field shows under half of the 64 characters at phone width, so the stored key, which
+    // is what the HELLO proof uses rather than whatever is typed in the field, is repeated wrapped.
+    () =>
+      keyVisible.val
+        ? div(
+            { class: "action-note ble-key-readout" },
+            shownKey.val ? `This page sends: ${shownKey.val}` : "No key is stored on this page yet."
+          )
+        : span(),
+    () => (entryError.val ? div({ class: "action-note failure" }, entryError.val) : span()),
+    () =>
+      secretWanted.val && bleStatus.val !== "refused"
+        ? div({ class: "action-note caution" }, "Paste emcool’s generated key above, then tap Connect this phone.")
+        : div(
+            { class: bleStatus.val === "refused" ? "action-note failure" : "action-note" },
+            describe(bleStatus.val, bleDetail.val)
+          ),
+    // Reachable only while a device is remembered but not connected — which is exactly the state a
+    // page stuck reconnecting to a device permitted in earlier testing sits in, and where the normal
+    // Connect only ever retries that device. Forgetting it falls the next connect back to the chooser.
+    () =>
+      bleStatus.val !== "off" && bleStatus.val !== "connected"
+        ? div(
+            { class: "settings-row" },
+            button(
+              { class: "settings-button", type: "button", onclick: () => forgetAndChoose() },
+              "Forget this bike & choose another"
+            )
+          )
+        : span()
+  );
+}
+
+/**
+ * Web Bluetooth needs a tap to open its chooser. Keep the chosen device for reconnects;
+ * a connected rider can explicitly choose another bike.
+ * @param {() => void} [openMenu] how to get the field on screen, when it is not already
+ */
+function connectNow(openMenu) {
+  if (storedSecret() === "") {
+    askForSecret(openMenu);
+    return;
+  }
+  secretWanted.val = false;
+  const attempt = deviceChosen() && bleStatus.val !== "connected" ? reconnect() : chooseAndConnect();
+  attempt.catch(error => {
+    // The chooser being dismissed is a rider changing their mind, not a fault.
+    if (/** @type {Error} */ (error).name === "NotFoundError") {
+      console.log("ble: device chooser dismissed");
+      return;
+    }
+    console.warn("ble: connect failed", error);
+    bleDetail.val = /** @type {Error} */ (error).message;
+  });
+}
+
+/**
+ * Drops the remembered device and opens the chooser in the same tap, so Web Bluetooth accepts the
+ * gesture. The way out when the page is stuck reconnecting to a device permitted in earlier testing:
+ * ordinary Connect only ever retries that device, so there is otherwise no path back to the chooser.
+ */
+function forgetAndChoose() {
+  forgetDevice();
+  chooseAndConnect().catch(error => {
+    // The chooser being dismissed is a rider changing their mind, not a fault.
+    if (/** @type {Error} */ (error).name === "NotFoundError") {
+      console.log("ble: device chooser dismissed");
+      return;
+    }
+    console.warn("ble: connect failed", error);
+    bleDetail.val = /** @type {Error} */ (error).message;
+  });
+}
+
+/** @param {(() => void) | undefined} openMenu */
+function askForSecret(openMenu) {
+  secretWanted.val = true;
+  openMenu?.();
+  // After the sheet has rendered open: a field still under `visibility: hidden` takes no
+  // focus. iOS will not raise the keyboard for a focus outside a tap, but the cursor is
+  // there and the note below says what it is for.
+  setTimeout(() => document.getElementById(SECRET_FIELD_ID)?.focus(), 150);
+}
+
+/**
+ * @param {BleStatus} status
+ * @param {string} detail
+ */
+function describe(status, detail) {
+  switch (status) {
+    case "off":
+      return "Not connected. The secret is stored on this phone only.";
+    case "connecting":
+      return "Connecting…";
+    case "connected":
+      return detail ? `Connected to ${detail}.` : "Connected.";
+    case "refused":
+      return `Connection attempt refused: ${detail}. Retrying while this page is open.`;
+    case "lost":
+      return detail ? `Link lost: ${detail}. Reconnecting while this page is open.` : "Link lost. Reconnecting.";
+  }
+}
