@@ -27,11 +27,12 @@ concurrency:
   group: pages
   cancel-in-progress: true
 
+# Upload and deploy run in separate jobs. deploy-pages looks the artifact up once, with no retry,
+# and GitHub's artifact listing can lag the upload by a moment, so a deploy in the same job as the
+# upload sometimes fails with 'No artifacts named "github-pages"'. Starting a second job gives the
+# listing time to catch up.
 jobs:
-  deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+  upload:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -40,5 +41,13 @@ jobs:
         uses: actions/upload-pages-artifact@v5
         with:
           path: dashboard
+
+  deploy:
+    needs: upload
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
       - id: deployment
         uses: actions/deploy-pages@v5
