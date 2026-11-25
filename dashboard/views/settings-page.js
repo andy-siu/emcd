@@ -22,7 +22,7 @@ import { ScreenGeometry } from "./screen-geometry.js";
 import { BikeConsole } from "./bike-console.js";
 import { NetworkConnections } from "./settings-network.js";
 
-const { a, button, div, h2 } = van.tags;
+const { button, div, h2 } = van.tags;
 import { SETTINGS_MAP } from "../lib/settings-map.js";
 
 export function SettingsPage() {
@@ -40,15 +40,6 @@ export function SettingsPage() {
               button(
                 { class: "settings-link", onclick: () => openDestination("settings", "console") },
                 "Open Bike console →"
-              ),
-              a(
-                {
-                  href: "https://github.com/andy-siu/emcool/blob/main/docs/setup.md",
-                  target: "_blank",
-                  rel: "noopener",
-                  class: "settings-link",
-                },
-                "Every setting and command →"
               )
             )
           ),
@@ -112,15 +103,6 @@ function SettingsContent(section) {
           "customBmsConfigurationFlashed",
           "Have you flashed the custom BMS configuration?",
           "Choose Yes only after flashing it. This changes how pack temperature is interpreted."
-        ),
-        a(
-          {
-            href: "https://github.com/andy-siu/emcool/blob/main/README.md#settings",
-            target: "_blank",
-            rel: "noopener",
-            class: "settings-link",
-          },
-          "Read the custom BMS explanation →"
         )
       );
     case "access":

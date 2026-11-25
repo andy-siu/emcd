@@ -5,6 +5,7 @@ import { OwnerActionRow } from "./owner-action.js";
 import { arm, armDwellElapsed, armed, refuseKeyRepeat } from "../lib/arming.js";
 import { LifetimeReadButton, refreshLifetimeRead } from "./lifetime-read.js";
 import { FreezeFrameReadButton, refreshFreezeFrameRead } from "./freeze-frame-read.js";
+import { EcuFirmwareRead, refreshEcuFirmwareRead } from "./ecu-firmware.js";
 import { serviceRefusal } from "../lib/service-gate-caption.js";
 import { monotonicNow, since } from "../lib/clock.js";
 import { ageInWords, duration } from "../lib/format.js";
@@ -13,7 +14,7 @@ import { VcuWrite, refreshVcuWrite } from "./vcu-write.js";
 import { download, request } from "../lib/transport.js";
 import { refreshPsuHold } from "../lib/psu-hold.js";
 
-const { a, button, div, h3 } = van.tags;
+const { button, div, h3 } = van.tags;
 
 // Service mode: read the VCU's calibration parameters off the bike on demand, and
 // hand the result over as the file another owner's energica_tool.py reads.
@@ -79,10 +80,7 @@ export function ServiceMode(includeBatteryRead = true) {
     ExportButton(),
     includeBatteryRead ? LifetimeReadButton(() => state.val) : div(),
     FreezeFrameReadButton(() => state.val),
-    div(
-      { class: "action-note" },
-      a({ href: "params.html", style: `color:${MUTED}` }, "Open the full parameter table →")
-    ),
+    EcuFirmwareRead(),
     // ⚠️ Everything above this line reads. Everything below it can CHANGE the
     // motorcycle, and it is behind its own switch (SERVICE_WRITE_ENABLED, off by
     // default) and fetches its own state. It is last on the sheet on purpose: the
@@ -394,6 +392,7 @@ export function refreshServiceMode(isOpen) {
   armed.val = "";
   void refreshPsuHold();
   refreshLifetimeRead();
+  refreshEcuFirmwareRead();
   refreshFreezeFrameRead();
   void sendVcuRead("GET");
   // The write section keeps its own state and its own endpoint, so it is refreshed

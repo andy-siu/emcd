@@ -272,9 +272,17 @@ let infokeysInFlight = false;
  * showing it with its age next to it.
  */
 let storedFetchInFlight = false;
+/** A forced refresh asked for while one was in flight. */
+let storedAskedAgain = false;
 
-export async function refreshStoredCodes() {
+/**
+ * @param {boolean} [force] past the refresh interval — for after a clear, when the list on
+ *   screen is now probably wrong. A fetch already in flight is not joined: it may have left
+ *   before the clear, so one more is queued behind it.
+ */
+export async function refreshStoredCodes(force = false) {
   if (storedFetchInFlight) {
+    storedAskedAgain = storedAskedAgain || force;
     return;
   }
   // The interval only applies once there is something to keep fresh. With no
@@ -282,7 +290,7 @@ export async function refreshStoredCodes() {
   // retry every time you come back to the tab — the same reasoning as loadTable's
   // gate, and for the same failure: a fetch lost to the phone not having joined the
   // garage wifi yet must not be permanent.
-  if (stored.val && storedFetchedAt !== null && monotonicNow() - storedFetchedAt < STORED_REFRESH_MS) {
+  if (!force && stored.val && storedFetchedAt !== null && monotonicNow() - storedFetchedAt < STORED_REFRESH_MS) {
     return;
   }
   storedFetchInFlight = true;
@@ -304,6 +312,10 @@ export async function refreshStoredCodes() {
     storedFetchedAt = monotonicNow();
   } finally {
     storedFetchInFlight = false;
+  }
+  if (storedAskedAgain) {
+    storedAskedAgain = false;
+    await refreshStoredCodes(true);
   }
 }
 

@@ -8,6 +8,8 @@ import { arm, armDwellElapsed, armed, refuseKeyRepeat } from "../lib/arming.js";
 import { describeStampEvidence } from "../lib/service-stamp.js";
 import { request } from "../lib/transport.js";
 import { PsuHoldCard } from "./psu-hold.js";
+import { refreshStoredCodes } from "../lib/fault-data.js";
+import { loadRecordedValues } from "./recorded-values.js";
 
 const { button, div, h2, h3, input, option, select, span } = van.tags;
 
@@ -121,6 +123,12 @@ const dangerOpen = van.state(false);
  * under a button whose press just vanished is the worst thing this card could say.
  */
 const clearOutcome = van.state(/** @type {{ message: string, verdict: ClearDtcsCounts["verdict"] } | null} */ (null));
+/**
+ * What the last clear said when it carried no counts — a refusal, or a request that never
+ * came back. On the sheet that sentence is `message`, shown by Outcome(); the fault report has
+ * no Outcome(), so ClearCodesPanel shows it from here. Empty otherwise.
+ */
+const clearRefusal = van.state("");
 /**
  * The last write attempt made from this page, so the outcome and the verification hint
  * can be shown against the parameter they belong to rather than to whatever is selected
@@ -284,7 +292,12 @@ function hasControls() {
  * Leads the section for the same reason the gate note leads the read section: a
  * disabled button with no reason given is indistinguishable from a broken one.
  */
-function Availability() {
+function Availability(withParameterNotes = true) {
+  // The table-type note and the build line are about the PARAMETER form, which the fault
+  // report does not carry; the clear is unaffected by the table gate (see TableTypeNote).
+  const tableNote = () => (withParameterNotes ? TableTypeNote() : div());
+  /** @param {VcuWriteStatus} status */
+  const version = status => (withParameterNotes ? RunningVersion(status) : div());
   return div({ class: "action-note" }, () => {
     const status = state.val?.status;
     if (!status) {
@@ -302,7 +315,7 @@ function Availability() {
           { style: `color:${MUTED}` },
           "Service data is unavailable. Open Settings and resolve its fault before writing."
         ),
-        RunningVersion(status)
+        version(status)
       );
     }
     if (!status.gate.safe) {
@@ -317,8 +330,8 @@ function Availability() {
           "🚫  VCU writes blocked:",
           ...status.gate.blockers.map(blocker => div({ style: `color:${MUTED}` }, `· ${blocker}`))
         ),
-        TableTypeNote(),
-        RunningVersion(status)
+        tableNote(),
+        version(status)
       );
     }
     return div(
@@ -328,8 +341,8 @@ function Availability() {
           ? "✅  Stationary and out of drive."
           : `🔌  Stationary and charging (${status.gate.chargingEvidence}) — deliberately allowed: a tethered bike cannot be ridden away, and the charge parameters cannot be tested unplugged.`
       ),
-      TableTypeNote(),
-      RunningVersion(status)
+      tableNote(),
+      version(status)
     );
   });
 }
@@ -409,7 +422,7 @@ function ParameterForm() {
       return (
         `These ${count} are the only parameters this can write. ` +
         "Four names appear twice in the bike's table and so have no unambiguous address, which is why eight rows are missing. " +
-        "All 277 stay READABLE, and a sweep reads 25 more the bike's table does not name — the full table is behind “Open the full parameter table”."
+        "All 277 stay READABLE, and a sweep reads 25 more the bike's table does not name."
       );
     }),
     TargetNote(),
@@ -1484,18 +1497,72 @@ export const IRREVERSIBLE = [
   {
     name: "Clear codes",
     action: "clear-dtcs",
-    render: () =>
-      ActionButton("clear-dtcs", () => "🧹  Clear the stored trouble codes", {
-        confirm: "WIPE the stored codes and their freeze frame",
-        noUndo: "The freeze frame goes with the codes.",
-        does:
-          "OBD Mode 04 — clears every code the bike currently holds stored. emcool parks its own OBD " +
-          "polling and reads the counters either side of the frame, so this takes a few seconds.",
-        caution: clearCodesCaution,
-        outcome: ClearOutcome,
-      }),
+    render: ClearCodesAction,
   },
 ];
+
+/**
+ * The clear, as ONE control: the sheet's danger zone renders it through IRREVERSIBLE and the
+ * fault report renders it through ClearCodesPanel. ⚠️ Never a copy — both mounts share this
+ * ActionButton's arming key (`action:clear-dtcs`), its busy state and its outcome, and they are
+ * never on screen together (every navigation disarms).
+ */
+export function ClearCodesAction() {
+  return ActionButton("clear-dtcs", () => "🧹  Clear the stored trouble codes", {
+    confirm: "WIPE the stored codes and their freeze frame",
+    noUndo: "The freeze frame goes with the codes.",
+    does:
+      "OBD Mode 04 — clears every code the bike currently holds stored. emcool parks its own OBD " +
+      "polling and reads the counters either side of the frame, so this takes a few seconds.",
+    caution: clearCodesCaution,
+    outcome: ClearOutcome,
+  });
+}
+
+/**
+ * The clear on the fault report, with the same availability line the sheet leads with.
+ *
+ * ⚠️ The button is only BUILT when writing is enabled — the sheet's own `hasControls()` rule —
+ * and with the gate refusing it is built disabled under the same "VCU writes blocked" list the
+ * sheet shows. With writing off, or before emcool has answered, there is no button at all:
+ * only the sentence saying why, exactly as the sheet.
+ */
+export function ClearCodesPanel() {
+  return div(
+    Availability(false),
+    () => (!hasControls() && message.val ? div({ class: "action-note failure" }, message.val) : div()),
+    // ⚠️ Bound to a derived BOOLEAN, not to `state`: the fault report re-polls the status every
+    // two seconds, and a binding on `state` would rebuild the button under a thumb on every poll.
+    // A derived state only notifies when its value actually changes.
+    () => (controlsShown.val ? ClearCodesAction() : div()),
+    () => (hasControls() && clearRefusal.val ? div({ class: "action-note failure" }, clearRefusal.val) : div())
+  );
+}
+
+const controlsShown = van.derive(() => hasControls());
+
+/**
+ * The fault report's reset: disarm, drop an answer read through an earlier visit, and fetch the
+ * status WITHOUT the 14 kB parameter listing, which nothing on that page uses.
+ */
+export async function refreshClearCodes() {
+  armed.val = "";
+  clearOutcome.val = null;
+  clearRefusal.val = "";
+  await fetchStatus(false, 0, true);
+}
+
+/**
+ * Re-reads the gate for the fault report's poll, without the listing. ⚠️ Skipped while
+ * anything is armed or a request is out: fetchStatus() disarms on every answer, and a poll
+ * that disarmed a half-confirmed tap every few seconds would make the control unusable.
+ */
+export async function pollClearCodes() {
+  if (armed.val !== "" || busy.val) {
+    return;
+  }
+  await fetchStatus(false, 0, true);
+}
 
 /**
  * Is a charger attached RIGHT NOW, as the gate sees it?
@@ -2325,9 +2392,15 @@ async function performAction(action, confirmation) {
     // AT the button, and leaving it in `message` too showed the same verdict twice, three
     // sections apart. Only when the card is actually showing it — a refusal has no `clear`, and
     // for that ending `message` is the only home the answer has.
+    clearRefusal.val = clearOutcome.val ? "" : message.val;
     if (clearOutcome.val && hasControls()) {
       message.val = "";
     }
+    // ⚠️ After EVERY ending, a vanished request included: it may have reached the bike. The
+    // clear erases the stored codes AND their records, so both are re-read — forced, past the
+    // stored-code list's refresh interval, because the list on screen is now likely wrong.
+    void refreshStoredCodes(true);
+    void loadRecordedValues();
     return;
   }
   if (action === "set-service-point") {
@@ -2472,8 +2545,13 @@ export function parameterListing() {
  * Kept apart from `refreshVcuWrite` because arming the clock sync needs a fresh
  * `clock.iso` and must not wipe a parameter reading somebody took thirty seconds ago;
  * `refreshVcuWrite` is the sheet-opening reset and deliberately does both.
+ *
+ * @param {boolean} [withListing] ask for the 269-name listing.
+ * @param {number} [reAsks] how many times this has already re-asked.
+ * @param {boolean} [withoutListing] NEVER ask for the listing, even when none is held — the
+ *   fault report's refresh, which has no parameter picker to fill.
  */
-export async function fetchStatus(withListing = false, reAsks = 0) {
+export async function fetchStatus(withListing = false, reAsks = 0, withoutListing = false) {
   if (reAsks > MAX_STATUS_REASKS) {
     // ⚠️ MEASURED, not defensive — and it was deleted once on the strength of a check too weak to
     // reach it. `adoptListing` cannot say yes twice running, but it does not have to: it ALTERNATES
@@ -2491,7 +2569,7 @@ export async function fetchStatus(withListing = false, reAsks = 0) {
   }
   // The listing is fetched when the sheet opens and never again — 14 397 of the 22 490 bytes
   // this asks for, against a page that already has it. See the `listing` state.
-  if (!withListing && listingHeldFor !== null) {
+  if (withoutListing || (!withListing && listingHeldFor !== null)) {
     query.set("list", "0");
   }
   const askedFor = selected.val;
@@ -2518,7 +2596,7 @@ export async function fetchStatus(withListing = false, reAsks = 0) {
     armed.val = "";
     state.val = payload;
     if (adoptListing(payload)) {
-      return await fetchStatus(true, reAsks + 1);
+      return await fetchStatus(!withoutListing, reAsks + 1, withoutListing);
     }
     if (selected.val === "" && listing.val.length > 0) {
       selected.val = listing.val[0].name;
@@ -2529,7 +2607,7 @@ export async function fetchStatus(withListing = false, reAsks = 0) {
       // it. Either way this reply describes a different parameter, so ask again for the one the
       // form is on. It cannot recur: a re-entry only fires when the selection moves during ITS own
       // request, and nothing below moves it.
-      return await fetchStatus(false, reAsks + 1);
+      return await fetchStatus(false, reAsks + 1, withoutListing);
     }
     return true;
   } catch (error) {

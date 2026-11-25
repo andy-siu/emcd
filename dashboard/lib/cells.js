@@ -83,6 +83,79 @@ export function cellsInModule(moduleNumber) {
 }
 
 /**
+ * The battery's nine physical modules, nine cells each in series order, as runs of
+ * [lmu, first cell, last cell]. The BMS numbers the pack by its eleven LMUs (the boards
+ * that measure the cells, 8 cells on LMUs 1-4 and 7 on 5-11), and those don't line up with
+ * the modules bolted into the bike: most modules span two LMUs, and M6 three.
+ *
+ * ⚠️ Taken from one 21.5 kWh pack (2023), not confirmed by the manufacturer. Check it
+ * against the pack in front of you before opening a module: PACK_LAYOUT_NOTE says so on
+ * the page.
+ * @type {Readonly<Record<number, ReadonlyArray<readonly [number, number, number]>>>}
+ */
+export const PACK_MODULES = {
+  1: [[1, 1, 8], [2, 1, 1]],
+  2: [[2, 2, 8], [3, 1, 2]],
+  3: [[3, 3, 8], [4, 1, 3]],
+  4: [[4, 4, 8], [5, 1, 4]],
+  5: [[5, 5, 7], [6, 1, 6]],
+  6: [[6, 7, 7], [7, 1, 7], [8, 1, 1]],
+  7: [[8, 2, 7], [9, 1, 3]],
+  8: [[9, 4, 7], [10, 1, 5]],
+  9: [[10, 6, 7], [11, 1, 7]],
+};
+
+/** Where each module sits, looking at the pack: M1 top right, M7 bottom right. */
+export const PACK_GRID = [
+  [3, 2, 1],
+  [4, 5, 6],
+  [9, 8, 7],
+];
+
+export const PACK_MODULE_COUNT = 9;
+
+export const PACK_LAYOUT_NOTE =
+  "Module placement is taken from one 21.5 kWh pack (2023), not confirmed by the manufacturer. Check it against your pack before opening a module.";
+
+/**
+ * One physical module's cells, in series order, each with its LMU and that LMU's cell.
+ * @param {number} packModule 1-9
+ * @returns {Array<{ lmu: number, cell: number, key: string }>}
+ */
+export function packModuleCells(packModule) {
+  return PACK_MODULES[packModule].flatMap(([lmu, first, last]) =>
+    Array.from({ length: last - first + 1 }, (_, index) => ({
+      lmu,
+      cell: first + index,
+      key: `lmu${lmu}_cell${first + index}_mv`,
+    }))
+  );
+}
+
+/**
+ * The physical module an LMU's cell is in, or null for a slot the layout doesn't hold.
+ * @param {number} lmu
+ * @param {number} cell
+ */
+export function packModuleOf(lmu, cell) {
+  for (let packModule = 1; packModule <= PACK_MODULE_COUNT; packModule++) {
+    if (PACK_MODULES[packModule].some(([run, first, last]) => run === lmu && cell >= first && cell <= last)) {
+      return packModule;
+    }
+  }
+  return null;
+}
+
+/**
+ * Which LMUs' sensors sit in a physical module: "LMU 1–2", "LMU 6–8".
+ * @param {number} packModule
+ */
+export function packModuleLmus(packModule) {
+  const runs = PACK_MODULES[packModule];
+  return `LMU ${runs[0][0]}–${runs[runs.length - 1][0]}`;
+}
+
+/**
  * The key a module's temperature sensor reports under, or null where that sensor
  * does not exist. Mirrors `lmuTemperatureKey()` in src/can/decode-bms.ts, which
  * owns the naming — see the note at the top of this file.

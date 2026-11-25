@@ -5,9 +5,12 @@ import { chartTick, valueOf } from "../lib/store.js";
 import { monotonicNow } from "../lib/clock.js";
 import { Fact, SectionLabel } from "../lib/tiles.js";
 import * as colors from "../lib/colors.js";
-import { loadRecordedValues } from "./recorded-values.js";
+import { FreezeFrameReadButton, refreshFreezeFrameRead } from "./freeze-frame-read.js";
+import { ClearCodesPanel, pollClearCodes, refreshClearCodes } from "./vcu-write.js";
+import { request } from "../lib/transport.js";
+import { destination } from "../lib/destination.js";
 import { ExpectedToggle, isExpected } from "../lib/expected-faults.js";
-import { showView } from "../lib/router.js";
+import { peekView, showView } from "../lib/router.js";
 import { StoredCodes } from "./stored-faults.js";
 import {
   loadFaultData,
@@ -19,11 +22,24 @@ import {
 } from "../lib/fault-data.js";
 import { historyOf, describeLastSeen, rawLabel, componentOf, symptomOf } from "../lib/fault-history.js";
 /** @typedef {import("../lib/fault-data.js").FaultRow} FaultRow */
+/** @typedef {import("../../src/http/vcu-read.ts").VcuReadResponse} VcuReadResponse */
 const { button, div, span } = van.tags;
+
+/**
+ * This page's own /vcu-read state, for the Stored fault records button: the gate and the
+ * service-mode switch it shares with the sheet. Null until emcool answers, and the button
+ * stays disabled until then. It is not the sheet's state, because that one is polled only
+ * while the sheet is open.
+ */
+const readState = van.state(/** @type {VcuReadResponse | null} */ (null));
 
 export function FaultReportView() {
   loadFaultData();
-  void loadRecordedValues();
+  // Also re-fetches the recorded values, which the opened codes below draw from.
+  refreshFreezeFrameRead();
+  void refreshClearCodes();
+  void refreshReadState();
+  startPolling();
   return div(
     { class: "view fault-report-view" },
     div(
@@ -46,6 +62,15 @@ export function FaultReportView() {
     SectionLabel("Counters"),
     Counters(),
     StoredCodes(),
+    // ⚠️ The SAME two controls the service sheet carries, mounted here rather than copied:
+    // one gate, one arming key, one busy state and one outcome each. See ./freeze-frame-read.js
+    // and ClearCodesAction in ./vcu-write.js.
+    div(
+      { class: "tile-group" },
+      SectionLabel("Read and clear"),
+      FreezeFrameReadButton(() => readState.val),
+      ClearCodesPanel()
+    ),
     Footnote()
   );
 }
@@ -163,4 +188,47 @@ function returnFromReport() {
   } else {
     showView("faults");
   }
+}
+
+/** GETs /vcu-read, which changes nothing on the bike. A failure keeps the last answer. */
+async function refreshReadState() {
+  try {
+    const response = await request("/vcu-read", { cache: "no-store", headers: { "X-Emcool": "service-mode" } });
+    readState.val = /** @type {VcuReadResponse} */ (await response.json());
+  } catch (error) {
+    console.warn("fault report: /vcu-read unavailable — the read button keeps its last gate", error);
+  }
+}
+
+/**
+ * Four seconds: the gate moves when the bike is parked or keyed, and the buttons have to follow
+ * it without a reload. Two cheap GETs that only sample the gate.
+ */
+const POLL_INTERVAL_MS = 4000;
+let polling = false;
+
+function isShown() {
+  return peekView() === "fault-report" && !destination.rawVal;
+}
+
+/**
+ * Keeps both gates fresh while this page is on screen. It stops by not rescheduling, the
+ * sheet's pattern in ./service-mode.js, and it pauses while the page is hidden.
+ */
+function startPolling() {
+  if (polling) {
+    return;
+  }
+  polling = true;
+  const step = async () => {
+    if (!isShown()) {
+      polling = false;
+      return;
+    }
+    if (!document.hidden) {
+      await Promise.all([refreshReadState(), pollClearCodes()]);
+    }
+    setTimeout(() => void step(), POLL_INTERVAL_MS);
+  };
+  setTimeout(() => void step(), POLL_INTERVAL_MS);
 }

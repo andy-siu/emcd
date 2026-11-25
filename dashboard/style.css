@@ -2004,9 +2004,52 @@ body {
   gap: 16px;
   font-size: 16px;
 }
+.pack-map h2 {
+  font-size: 18px;
+  margin: 0;
+}
+.pack-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin: 8px 0;
+}
+.pack-module {
+  border: 1px solid var(--tile-edge);
+  border-radius: 8px;
+  padding: 4px;
+  min-width: 0;
+}
+.pack-module-name {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 3px;
+}
+.pack-cells {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 2px;
+}
+.pack-cell {
+  min-width: 0;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  padding: 3px 0;
+  text-align: center;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--tile);
+  font-weight: 600;
+}
+.pack-cell.missing,
+.pack-cell.stale,
+.pack-cell.fault {
+  color: var(--sub);
+  background: none;
+}
 .cell-values {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px 8px;
 }
 .cell-number {
@@ -2426,3 +2469,9 @@ body {
   text-transform: none;
   letter-spacing: 0;
 }
+
+/* Service → ECU firmware: the reading is the long column (ENRG_RRS00210020). */
+.ecu-firmware th:nth-child(1) { width: 22%; }
+.ecu-firmware th:nth-child(3),
+.ecu-firmware th:nth-child(4) { width: 14%; }
+.ecu-firmware th:nth-child(5) { width: 20%; }
