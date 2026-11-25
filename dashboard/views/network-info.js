@@ -1,10 +1,11 @@
 // @ts-check
 // Menu → Network info (also the header's Wi-Fi dot): what the bike's Wi-Fi is set to and what it is
-// doing. The saved network and which passwords are set (from GET /console's settings list), an on/off
+// doing. The saved network, which passwords are set and how many SSH keys (from GET /console's
+// settings list), an on/off
 // button (WIFI_ENABLED, which applies at once), and the ifconfig report (whether it has joined, its
 // address, the SSH host key's fingerprint, where the consoles and the ride-log page are), read when the
-// page opens and again when the link comes back. Changing the network or the passwords is Settings →
-// Network connections (./settings-network.js), which shows these same cards.
+// page opens and again when the link comes back. Changing the network, the passwords or the keys is
+// Settings → Network connections (./settings-network.js), which shows these same cards.
 import van from "../vendor/van-1.6.1.js";
 import { request } from "../lib/transport.js";
 import { connection } from "../lib/store.js";
@@ -12,6 +13,7 @@ import { BLE_MODE } from "../lib/ble-link.js";
 import { destination, openDestination } from "../lib/destination.js";
 import { SettingsCard } from "./settings-fields.js";
 import { OUTPUT_STYLE, busy, linkReady, list, listError, results, runLine, watchConsoleList } from "./bike-console.js";
+import { SSH_KEY_SETTINGS } from "../lib/ssh-key.js";
 
 const { button, div, h2, pre } = van.tags;
 
@@ -21,6 +23,24 @@ const reading = van.state(false);
 
 /** @param {string} name */
 const setting = name => list.val?.settings.find(entry => entry.name === name);
+
+/**
+ * Whether this boot runs with a value for it. A secret that isn't set reads "not set"; a text
+ * setting (WIFI_SSID, an SSH key) reads "", and could be called "not set" itself.
+ * @param {import("./bike-console.js").ConsoleSetting | undefined} entry
+ */
+const isActive = entry => !!entry?.active && (entry.type !== "secret" || entry.active !== "not set");
+
+/** How many SSH keys are saved, how many this boot runs with, and whether one waits for a restart. */
+function sshKeyCounts() {
+  const entries = SSH_KEY_SETTINGS.map(setting).filter(entry => entry !== undefined);
+  return {
+    known: entries.length > 0,
+    saved: entries.filter(entry => entry.set).length,
+    running: entries.filter(isActive).length,
+    pending: entries.some(entry => entry.pending),
+  };
+}
 
 /**
  * Runs `ifconfig` on the bike's console. Called from inside bindings (the page opening), so it
@@ -66,18 +86,20 @@ function savedLine(name) {
   return entry.pending ? `${entry.saved} (running now: ${entry.active}, until Restart)` : entry.saved;
 }
 
-/** Whether Wi-Fi is on, now and after Restart, the network, and which passwords are set. */
+/** Whether Wi-Fi is on, now and after Restart, the network, which passwords are set, and how many SSH keys. */
 export function NetworkSummary() {
   return () => {
     if (!list.val) return div();
     const name = setting("WIFI_SSID");
     const admin = setting("ADMIN_PASSWORD");
     const telnet = setting("TELNET_PASSWORD");
-    const isSet = (/** @type {import("./bike-console.js").ConsoleSetting | undefined} */ entry) => !!entry?.active && entry.active !== "not set";
+    const keys = sshKeyCounts();
     const switchedOn = setting("WIFI_ENABLED")?.active !== "0";
-    const savedOn = !!name?.set && (!!admin?.set || !!telnet?.set);
-    const runningOn = switchedOn && isSet(name) && (isSet(admin) || isSet(telnet));
+    // Settings::wifiSetUp(): a network, and a password or an SSH key to guard what it serves.
+    const savedOn = !!name?.set && (!!admin?.set || !!telnet?.set || keys.saved > 0);
+    const runningOn = switchedOn && isActive(name) && (isActive(admin) || isActive(telnet) || keys.running > 0);
     const afterRestart = switchedOn && savedOn;
+    const total = SSH_KEY_SETTINGS.length;
     return div(
       { class: "settings-note settings-state" },
       div(
@@ -86,6 +108,17 @@ export function NetworkSummary() {
       div(`Network: ${name?.set ? savedLine("WIFI_SSID") : "not set"}.`),
       div(`Wi-Fi password: ${savedLine("WIFI_PASSWORD")}.`),
       div(`SSH password: ${savedLine("ADMIN_PASSWORD")}.`),
+      keys.known
+        ? div(
+            `SSH keys: ${keys.saved} of ${total} set${
+              keys.saved !== keys.running
+                ? ` (running now: ${keys.running}, until Restart)`
+                : keys.pending
+                  ? " (a changed key takes effect after Restart)"
+                  : ""
+            }.`
+          )
+        : div(),
       div(`Telnet password: ${savedLine("TELNET_PASSWORD")}.`)
     );
   };
@@ -96,8 +129,8 @@ const switchResult = van.state("");
 
 /**
  * Turns Wi-Fi on or off now with `set WIFI_ENABLED`, which the bike applies at once and keeps across
- * restarts. The network and the passwords stay as they are. Turning it off closes any SSH, telnet or
- * ride-log connection, so a console reached over Wi-Fi goes with it.
+ * restarts. The network, the passwords and the SSH keys stay as they are. Turning it off closes any
+ * SSH, telnet or ride-log connection, so a console reached over Wi-Fi goes with it.
  * @param {boolean} on
  */
 async function switchWifi(on) {
@@ -120,9 +153,10 @@ export function WifiSwitch() {
     }
     const on = enabled.active !== "0";
     const name = setting("WIFI_SSID");
-    // What this boot runs with: a network, and a password for something it serves.
-    const running = (/** @type {string} */ key) => (setting(key)?.active ?? "not set") !== "not set";
-    const setUp = !!name?.active && (running("ADMIN_PASSWORD") || running("TELNET_PASSWORD"));
+    // What this boot runs with: a network, and a password or an SSH key for something it serves.
+    const setUp =
+      isActive(name) &&
+      (isActive(setting("ADMIN_PASSWORD")) || isActive(setting("TELNET_PASSWORD")) || sshKeyCounts().running > 0);
     return div(
       div(
         { class: "settings-row" },
@@ -141,10 +175,10 @@ export function WifiSwitch() {
       div(
         { class: "settings-note" },
         on
-          ? "Off closes SSH, telnet and the ride-log page at once, and leaves the radio to Bluetooth. The network and the passwords stay saved."
+          ? "Off closes SSH, telnet and the ride-log page at once, and leaves the radio to Bluetooth. The network, the passwords and the SSH keys stay saved."
           : setUp
             ? "On joins the saved network now, with no restart."
-            : "On does nothing until a network and a password are saved and the bike restarts: Change the network settings."
+            : "On does nothing until a network and a password or SSH key are saved and the bike restarts: Change the network settings."
       ),
       () => (switchResult.val ? pre({ style: OUTPUT_STYLE }, switchResult.val) : div())
     );
@@ -183,7 +217,7 @@ export function NetworkInfo() {
     h2("Network info"),
     SettingsCard(
       "Wi-Fi",
-      "What the bike joins, and which passwords guard what it serves. Passwords are never sent back, only whether they are set.",
+      "What the bike joins, and which passwords and SSH keys guard what it serves. Passwords are never sent back, only whether they are set.",
       () =>
         div(
           { class: "settings-note", role: "status" },

@@ -6,6 +6,7 @@ import { arm, armDwellElapsed, armed, refuseKeyRepeat } from "../lib/arming.js";
 import { MUTED } from "../lib/colors.js";
 import { serviceRefusal, serviceRefused } from "../lib/service-gate-caption.js";
 import { request } from "../lib/transport.js";
+import { loadLifetimeStats } from "../lib/lifetime.js";
 
 // The service sheet's second read: the bike's lifetime battery statistics, off
 // components 51 and 52, in-process.
@@ -121,8 +122,11 @@ async function performLifetimeRead() {
     console.warn("lifetime-read: request failed", error);
     message.val =
       `Could not reach emcool — ${error instanceof Error ? error.message : String(error)}. ` +
-      "The read may have completed anyway; the All tab shows the age of what is stored.";
+      "The read may have completed anyway; the statistics above show the age of what is stored.";
   } finally {
     busy.val = false;
+    // Every time, failures included: a request that did not come back may still have stored a
+    // reading, and the statistics above this button only change when this asks again.
+    void loadLifetimeStats(true);
   }
 }

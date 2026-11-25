@@ -47,6 +47,7 @@ const SECRET_FIELD_ID = "ble-secret";
 /** Set when a connect was refused for want of a secret; the menu's note says what to do. */
 const secretWanted = van.state(false);
 const entryError = van.state("");
+const keySaved = van.state(false);
 
 /**
  * In the header, beside the link dot, until the link is up.
@@ -64,25 +65,29 @@ export function BleConnectButton(openMenu) {
   return button({ class: "ble-connect", onclick: () => connectNow(openMenu) }, "Connect");
 }
 
-/** The sheet's Bluetooth section: the secret, the state of the link, and a Connect button. */
-export function BleSection() {
+/**
+ * The sheet's Bluetooth section: the secret, the state of the link, and a Connect button.
+ * @param {{ alwaysShowKey?: boolean }} [options] alwaysShowKey keeps the key field on screen even
+ *   where this page cannot open a Bluetooth link (wrong origin, no Web Bluetooth, not BLE mode), so
+ *   the key can still be stored; the field then saves without connecting.
+ */
+export function BleSection({ alwaysShowKey = false } = {}) {
+  /** @type {string} */
+  let blocked = "";
   if (!BLE_MODE) {
-    return div();
+    blocked = "This page is not using Bluetooth, so the key is only stored here for when it is.";
+  } else if (!originAllowed()) {
+    blocked = BLE_ORIGIN_MESSAGE;
+  } else if (!bluetoothAvailable()) {
+    blocked = "This browser has no Web Bluetooth. On iPhone use Bluefy; on Android or a Mac, Chrome.";
   }
-  if (!originAllowed()) {
-    return div(h2({ class: "sheet-heading" }, "Bluetooth"), div({ class: "action-note caution" }, BLE_ORIGIN_MESSAGE));
+  if (blocked && !alwaysShowKey) {
+    return BLE_MODE ? div(h2({ class: "sheet-heading" }, "Bluetooth"), div({ class: "action-note caution" }, blocked)) : div();
   }
-  if (!bluetoothAvailable()) {
-    return div(
-      h2({ class: "sheet-heading" }, "Bluetooth"),
-      div(
-        { class: "action-note caution" },
-        "This browser has no Web Bluetooth. On iPhone use Bluefy; on Android or a Mac, Chrome."
-      )
-    );
-  }
+  const canConnect = !blocked;
   return div(
     h2({ class: "sheet-heading" }, "Enter the bike’s Bluetooth key"),
+    blocked ? div({ class: "action-note caution" }, blocked) : span(),
     // A form, so Return in the field connects and a password manager can offer to keep
     // the secret. The secret is saved from the form at submit rather than on `change`,
     // which a Return keypress does not reliably fire first.
@@ -96,7 +101,12 @@ export function BleSection() {
             rememberSecret(/** @type {HTMLInputElement} */ (field).value);
             shownKey.val = storedSecret();
             entryError.val = "";
-            connectNow();
+            if (canConnect) {
+              connectNow();
+            } else {
+              entryError.val = "";
+              keySaved.val = true;
+            }
           } catch (error) {
             console.log("ble: generated key entry rejected");
             entryError.val = /** @type {Error} */ (error).message;
@@ -118,9 +128,10 @@ export function BleSection() {
         value: storedSecret(),
       }),
       button({ class: "settings-button", type: "submit" }, () =>
-        bleStatus.val === "connected" ? "Choose another bike" : "Connect this phone"
+        !canConnect ? "Save key" : bleStatus.val === "connected" ? "Choose another bike" : "Connect this phone"
       )
     ),
+    () => (keySaved.val && !canConnect ? div({ class: "action-note" }, "Key saved on this phone.") : span()),
     // Each origin keeps its own copy of the key, so after "wrong secret" the rider needs to see
     // which one this page sends to compare it with their saved copy. Hidden until asked.
     label(

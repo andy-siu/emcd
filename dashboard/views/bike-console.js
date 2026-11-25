@@ -2,7 +2,7 @@
 // Settings → Bike console: emcool's serial console over the Bluetooth link. Every setting with
 // its saved value and the value in force, a form per setting, the status report the serial port
 // prints, and a command line for anything else. It runs the console's own commands (show, set,
-// unset, status, ifconfig, restart) through /console, so a change here is a change at `emcool>`.
+// unset, status, cells, service, faults, lifetime, ifconfig, version, restart) through /console, so a change here is a change at `emcool>`.
 // See docs/setup.md.
 import van from "../vendor/van-1.6.1.js";
 import { request } from "../lib/transport.js";
@@ -10,6 +10,7 @@ import { connection } from "../lib/store.js";
 import { arm, armDwellElapsed, armed, refuseKeyRepeat } from "../lib/arming.js";
 import { BLE_MODE, rememberSecret } from "../lib/ble-link.js";
 import { canonicalBleSecret, generateBleSecret, validBleSecret } from "../lib/ble-secret.js";
+import { PRIVATE_KEY_REFUSAL, SSH_KEY_SETTINGS, looksLikePrivateKey } from "../lib/ssh-key.js";
 import { SettingsCard } from "./settings-fields.js";
 
 const { button, div, input, label, option, pre, select, span } = van.tags;
@@ -78,7 +79,7 @@ async function refreshList() {
     const current = /** @type {ConsoleList} */ (await response.json());
     for (const setting of current.settings) {
       const draft = drafts.get(setting.name);
-      if (draft && !draft.edited) draft.value.val = setting.type === "secret" ? "" : setting.saved;
+      if (draft && !draft.edited) draft.value.val = startsEmpty(setting) ? "" : setting.saved;
     }
     list.val = current;
     listError.val = "";
@@ -177,7 +178,7 @@ export function BikeConsole() {
   return div(
     SettingsCard(
       "The bike's console, over Bluetooth",
-      "Runs the serial console's commands: show, set NAME VALUE, unset NAME, status, ifconfig and restart. A change here is saved on the bike exactly as at the emcool> prompt. Most settings take effect after Restart; the status report's apply at once. Passwords are never sent back, only whether they are set.",
+      "Runs the serial console's commands: show, set NAME VALUE, unset NAME, status, cells, service, faults, lifetime, ifconfig, version and restart. A change here is saved on the bike exactly as at the emcool> prompt. Most settings take effect after Restart; the status report's apply at once. Passwords are never sent back, only whether they are set.",
       () =>
         div(
           { class: "settings-note", role: "status" },
@@ -294,11 +295,19 @@ async function restart(keyChanging) {
   }
 }
 
+/**
+ * Whether a setting's field starts empty rather than holding what is saved: a secret, which is never
+ * sent back, and an SSH key, which comes back as `show` prints it (type, fingerprint, comment), not
+ * as a line the bike would take again.
+ * @param {ConsoleSetting} setting
+ */
+const startsEmpty = setting => setting.type === "secret" || SSH_KEY_SETTINGS.includes(setting.name);
+
 /** @param {ConsoleSetting} setting */
 function draftFor(setting) {
   let draft = drafts.get(setting.name);
   if (!draft) {
-    draft = { value: van.state(setting.type === "secret" ? "" : setting.saved), edited: false };
+    draft = { value: van.state(startsEmpty(setting) ? "" : setting.saved), edited: false };
     drafts.set(setting.name, draft);
   }
   return draft;
@@ -342,7 +351,7 @@ function SettingCard(setting) {
           disabled: () =>
             !!busy.val ||
             !linkReady() ||
-            (setting.type === "secret" && !draft.value.val) ||
+            (startsEmpty(setting) && !draft.value.val) ||
             (isKey && !!generatedKey.val && draft.value.val === generatedKey.val && !generatedKept.val),
           onclick: () => {
             if (turningOnWrites()) {
@@ -442,6 +451,13 @@ function KeyMaker(draft) {
 /** @param {ConsoleSetting} setting @param {{ value: TextState, edited: boolean }} draft */
 async function save(setting, draft) {
   const value = draft.value.rawVal;
+  // The bike would refuse it too, but a private key shouldn't leave this phone at all.
+  if (SSH_KEY_SETTINGS.includes(setting.name) && looksLikePrivateKey(value)) {
+    draft.value.val = "";
+    draft.edited = false;
+    results.val = { ...results.rawVal, [setting.name]: PRIVATE_KEY_REFUSAL };
+    return;
+  }
   const line =
     setting.name === "STATUS_REPORT"
       ? `status ${value === "1" ? "on" : "off"}`
@@ -451,7 +467,7 @@ async function save(setting, draft) {
   const reply = await runLine(setting.name, line);
   if (!reply?.ok) return;
   draft.edited = false;
-  if (setting.type === "secret") draft.value.val = "";
+  if (startsEmpty(setting)) draft.value.val = "";
   if (setting.name === "BLE_SECRET") {
     // Restart asks for the new key; this phone already has it.
     restartKey.val = canonicalBleSecret(value);
@@ -493,10 +509,14 @@ function Editor(setting, draft) {
     placeholder:
       setting.type === "secret"
         ? `${setting.saved}; type a new one to replace it`
-        : setting.defaultValue
-          ? `default: ${setting.defaultValue}`
-          : "",
-    maxlength: setting.maximum,
+        : SSH_KEY_SETTINGS.includes(setting.name)
+          ? "paste a .pub line: ssh-ed25519 AAAA… you@laptop"
+          : setting.defaultValue
+            ? `default: ${setting.defaultValue}`
+            : "",
+    // Not for an SSH key: a line cut at 400 by the browser would still parse, and save a key with half
+    // its comment missing. Sent whole, the bike refuses one that's too long, and says so.
+    maxlength: SSH_KEY_SETTINGS.includes(setting.name) ? undefined : setting.maximum,
     value: () => draft.value.val,
     oninput: onInput,
   });
@@ -505,7 +525,7 @@ function Editor(setting, draft) {
 function CommandCard() {
   return SettingsCard(
     "Command line",
-    "Type a command as at the emcool> prompt: help, show, status, ifconfig, set NAME VALUE, unset NAME, and the card's dir, cd, type, mkdir, rm, cp and mv. Quote a value with spaces.",
+    "Type a command as at the emcool> prompt: help, show, status, cells, service (the service light; service reset confirm resets it), faults (stored codes and freeze frames; faults read reads them, faults clear confirm erases them), lifetime (the pack's lifetime statistics; lifetime read reads them), ifconfig, version, set NAME VALUE, unset NAME, and the card's dir, cd, type, mkdir, rm, cp and mv. Quote a value with spaces.",
     div(
       { class: "settings-row" },
       div(
@@ -555,6 +575,11 @@ async function submitCommand() {
   const line = commandLine.rawVal.trim();
   if (!line) return;
   commandLine.val = "";
+  // A private key never leaves this phone, nor shows in the transcript.
+  if (looksLikePrivateKey(line)) {
+    transcript.val = [...transcript.rawVal, { line: "(a private key, not sent)", output: `${PRIVATE_KEY_REFUSAL}\n` }].slice(-12);
+    return;
+  }
   // These go through their cards, which ask twice (and Restart checks a pending key), never straight from here.
   const refusal = /^restart\b/i.test(line)
     ? "Use Restart above: it asks twice."

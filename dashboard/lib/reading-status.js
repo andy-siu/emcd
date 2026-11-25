@@ -1,5 +1,6 @@
 // @ts-check
 // Server-clock fault memory and measured/onDemand freshness: docs/reading-status.md.
+import { CELL_VOLTAGE_PATTERN } from "./cells.js";
 import { ON_DEMAND_KEYS } from "./generated-bounds.js";
 import {
   chartTick,
@@ -14,7 +15,14 @@ import {
 } from "./store.js";
 
 const onDemand = new Set(ON_DEMAND_KEYS);
-export const STALE_MS = 8000;
+// 30 s, up from 8, 15 and then 20, for every streamed reading. A dead link still makes
+// everything stale at once.
+export const STALE_MS = 30_000;
+// The per-cell voltages get a minute. They come from frames 0x662-0x664, which take turns
+// across all eleven modules, so any one cell is heard from far less often than the
+// frames arrive. On the bike, cells all over the pack kept reading stale at 20 s, and
+// a cell's voltage barely moves in a minute.
+export const CELL_STALE_MS = 60_000;
 export const FAULT_MEMORY_MS = 60_000;
 /** @typedef {"fresh" | "missing" | "stale" | "fault"} ReadingStatus */
 
@@ -69,5 +77,6 @@ export function readingIsStale(key, sampled = false) {
     const link = sampled ? connection.rawVal : connection.val;
     return reading === null || link !== "live";
   }
-  return sampled ? isStaleSampled(key, STALE_MS) : isStale(key, STALE_MS);
+  const maxAgeMs = CELL_VOLTAGE_PATTERN.test(key) ? CELL_STALE_MS : STALE_MS;
+  return sampled ? isStaleSampled(key, maxAgeMs) : isStale(key, maxAgeMs);
 }

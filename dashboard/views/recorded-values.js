@@ -2,7 +2,7 @@
 
 import van from "../vendor/van-1.6.1.js";
 import { infokeyFault } from "../lib/infokey-bounds.js";
-import { groupedReading } from "../lib/format.js";
+import { ageInWords, groupedReading } from "../lib/format.js";
 import * as colors from "../lib/colors.js";
 import { request } from "../lib/transport.js";
 
@@ -36,6 +36,13 @@ const reading = van.state(/** @type {FreezeFramesResponse | null} */ (null));
 let inFlight = false;
 
 /**
+ * Set when a load was asked for while one was already in flight. ⚠️ Not dropped: a load asked
+ * for right after a read finishes must see THAT read, and the one already in flight may have
+ * left before the read was stored. One more fetch is queued instead.
+ */
+let askedAgain = false;
+
+/**
  * Set when the fetch itself failed, so the page can tell "nothing has been read" from "we
  * could not ask". ⚠️ They are different claims and only one is about the motorcycle —
  * `console.warn` already kept them apart in the journal; this is what keeps them apart on
@@ -52,9 +59,11 @@ const fetchFailed = van.state("");
  */
 export async function loadRecordedValues() {
   if (inFlight) {
+    askedAgain = true;
     return;
   }
   inFlight = true;
+  askedAgain = false;
   try {
     const response = await request("/freeze-frames", { cache: "no-store" });
     if (!response.ok) {
@@ -71,14 +80,17 @@ export async function loadRecordedValues() {
   } finally {
     inFlight = false;
   }
+  if (askedAgain) {
+    await loadRecordedValues();
+  }
 }
 
 /**
- * ⚠️ Only reached when /freeze-frames itself could not be fetched, so the instruction is
- * shown without the server's own wording. The server's copy is the one that ships; this
- * exists so a failed fetch does not render the word "undefined" at somebody in a garage.
+ * How to take a reading, in this page's words rather than the server's `howToRead`. That
+ * one names the button by its old caption ("Read the stored freeze frames") and has to stay
+ * as the reference implementation writes it, so the page no longer shows it.
  */
-const HOW_TO_READ_FALLBACK = "Take one from menu → Service mode";
+const HOW_TO_READ = "Tap “Read the stored fault records”, parked, with the drive down or plugged in";
 
 /**
  * The block under one opened code line, by `"component/symptom"` key.
@@ -143,7 +155,6 @@ function Values(key, component, symptom) {
   // nothing and made `reading.val` inside here silently `undefined`.
   const payload = reading.val;
   const stored = payload?.reading ?? null;
-  const howToRead = payload?.howToRead ?? HOW_TO_READ_FALLBACK;
   if (!stored) {
     // ⚠️ Two different sentences, because they are two different claims. "Nothing has been
     // read on this bike" is about the motorcycle; a failed fetch is about this page, and
@@ -151,7 +162,7 @@ function Values(key, component, symptom) {
     // gave — the distinction src/diagnostics/stored-codes.ts exists to protect.
     return fetchFailed.val
       ? Note(`Could not ask emcool what it has recorded (${fetchFailed.val}). This says nothing about the bike.`)
-      : Note(`No values have been read on this bike. ${howToRead}.`);
+      : Note(`No values have been read on this bike. ${HOW_TO_READ}.`);
   }
   const record = stored.records.find(candidate => candidate.component === component);
   if (!record) {
@@ -185,6 +196,17 @@ function Values(key, component, symptom) {
       `The VCU's record for this component is symptom ${frame.symptom}${frame.obdCode ? ` (${frame.obdCode})` : ""}, not this one.`
     );
   }
+  return FrameValues(frame);
+}
+
+/**
+ * What one record holds: its fields, whether the reply ran short, and how long ago it was
+ * stored. ⚠️ ONE renderer, used under an opened code here and per component on the Stored
+ * fault records card (./freeze-frame-read.js), so the bounds check and the raw-only rule
+ * cannot differ between the two places the same record is drawn.
+ * @param {import("../../src/diagnostics/freeze-frame.ts").FreezeFrame} frame
+ */
+function FrameValues(frame) {
   return div(
     { class: "code-fields" },
     div({ style: `color:${colors.MUTED}` }, "Recorded when this code set:"),
@@ -197,6 +219,97 @@ function Values(key, component, symptom) {
       : null,
     div({ style: `color:${colors.MUTED}` }, describeAge(frame.cyclesSinceStored))
   );
+}
+
+/**
+ * Every record the last read stored, one entry per component the VCU listed — the list the
+ * Stored fault records card shows under its button.
+ *
+ * ⚠️ Same four-way honesty as `Values` above: not read, read-but-unreachable, read-and-empty
+ * and a real record are four different claims, and a failed FETCH is a fifth that is about
+ * this page rather than the bike.
+ */
+export function StoredRecords() {
+  return () => {
+    const payload = reading.val;
+    const stored = payload?.reading ?? null;
+    if (!stored) {
+      if (fetchFailed.val) {
+        return Note(`Could not ask emcool what it has recorded (${fetchFailed.val}). This says nothing about the bike.`);
+      }
+      if (payload === null) {
+        return Note("Asking emcool what it has recorded…");
+      }
+      return Note(`Nothing read yet on this bike. ${HOW_TO_READ}.`);
+    }
+    const heading = div(
+      { class: "code-fields", style: `color:${colors.MUTED}` },
+      `Read ${ageInWords(stored.readAt)}`,
+      stored.completion === "complete"
+        ? null
+        : span({ style: `color:${colors.WARN}` }, ` · the read did not finish (${stored.completion})`),
+      fetchFailed.val ? span(` · could not refresh (${fetchFailed.val}), showing the last answer`) : null
+    );
+    // Listed components first, in the VCU's order; then any record for a component the list
+    // did not name, which should not happen and is shown rather than hidden if it does.
+    const components = [
+      ...stored.components,
+      ...stored.records.map(record => record.component).filter(component => !stored.components.includes(component)),
+    ];
+    if (components.length === 0) {
+      return div(
+        heading,
+        Note(stored.completion === "no-list" ? "The VCU's list of stored records could not be read." : "No records stored.")
+      );
+    }
+    return div(heading, ...components.map(component => RecordEntry(stored, component)));
+  };
+}
+
+/**
+ * One component's entry on the card.
+ * @param {StoredFreezeFrameReading} stored
+ * @param {number} component
+ */
+function RecordEntry(stored, component) {
+  const record = stored.records.find(candidate => candidate.component === component);
+  const frame = record?.failure === null && record.response.kind === "frame" ? record.response.frame : null;
+  const title = frame
+    ? frame.obdCode
+      ? `${frame.obdCode} · ${frame.description ?? `component ${component}`}`
+      : (frame.description ?? `component ${component}`)
+    : `component ${component}`;
+  return div(
+    { class: "code-fields", style: "margin-left:0" },
+    div({ style: `color:${colors.CALM}` }, title),
+    frame ? div({ style: `color:${colors.MUTED}` }, `component ${component} · symptom ${frame.symptom}`) : null,
+    frame ? FrameValues(frame) : div({ style: `color:${colors.MUTED}` }, recordNote(stored, record))
+  );
+}
+
+/**
+ * Why a listed component has no record on screen.
+ * @param {StoredFreezeFrameReading} stored
+ * @param {FreezeFrameRecord | undefined} record
+ */
+function recordNote(stored, record) {
+  if (!record) {
+    return stored.completion === "budget-spent"
+      ? "Listed by the VCU, but the read ran out of time before reaching it."
+      : `Listed by the VCU, but the read ended (${stored.completion}) before reaching it.`;
+  }
+  if (record.failure !== null) {
+    return `The VCU did not answer for this component: ${record.failure}.`;
+  }
+  const response = record.response;
+  if (response.kind === "refused") {
+    return `The VCU refused to give this record: ${response.description}.`;
+  }
+  if (response.kind === "component-mismatch") {
+    return `The VCU answered about component ${response.received} instead.`;
+  }
+  // `57 00`: see `Values` above — the VCU listed it and had nothing to give.
+  return "The VCU listed this component but had no record to give.";
 }
 
 /**

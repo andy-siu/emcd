@@ -18,7 +18,7 @@ const { div, table, thead, tbody, tr, th, td } = van.tags;
 export function ModuleTemperatures() {
   return div(
     { class: "tile module-temperatures" },
-    div({ class: "label" }, "Module temperatures"),
+    div({ class: "label" }, "LMU temperatures"),
     () => {
       chartTick.val;
       const grid = moduleTemperatureGrid(key => (readingStatus(key, true) === "fresh" ? peek(key) : null));
@@ -32,11 +32,11 @@ export function ModuleTemperatures() {
     div({ class: "sub", "data-module-count": "" }, () => {
       chartTick.val;
       const seen = moduleTemperatureGrid(key => (readingStatus(key, true) === "fresh" ? peek(key) : null)).seen;
-      return `${seen} of ${MODULE_SENSOR_COUNT} fresh · modules 6 & 8 have no battery sensor`;
+      return `${seen} of ${MODULE_SENSOR_COUNT} fresh · LMUs 6 & 8 have no battery sensor`;
     }),
     table(
       { class: "module-readings" },
-      thead(tr(th("Module"), th("Battery"), th("PCB 1"), th("PCB 2"))),
+      thead(tr(th("LMU"), th("Battery"), th("PCB 1"), th("PCB 2"))),
       tbody(
         ...Array.from({ length: MODULE_COUNT }, (_, index) =>
           tr(

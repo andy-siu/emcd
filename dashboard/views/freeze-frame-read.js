@@ -6,14 +6,21 @@ import { arm, armDwellElapsed, armed, refuseKeyRepeat } from "../lib/arming.js";
 import { MUTED } from "../lib/colors.js";
 import { serviceRefusal, serviceRefused } from "../lib/service-gate-caption.js";
 import { request } from "../lib/transport.js";
+import { StoredRecords, loadRecordedValues } from "./recorded-values.js";
 
 // The service sheet's third read: every stored freeze frame — the `0x18` list of components
 // that have a record, then `0x17` for each one.
 //
-// ⚠️ It lives in the SHEET and its results live on the Faults tab, which is the split
-// ./lifetime-read.js already makes for the same reason: every control that puts a frame on
-// the bike's bus is behind one gate, one arming convention and one refusal caption, and a
-// second place to start a bus read would be a second place to forget one of the three.
+// ⚠️ ONE control, mounted in two places — the service sheet and the fault report — and
+// never copied: every control that puts a frame on the bike's bus is behind one gate, one
+// arming convention and one refusal caption, and a second COPY of a bus read would be a
+// second place to forget one of the three. Both mounts share this module's busy/message
+// state and the one arming key; they are never on screen together (the sheet is a
+// destination page that replaces the view), and every navigation disarms.
+//
+// The records themselves are drawn by ./recorded-values.js — the same renderer, and the
+// same fetched reading, the opened codes on the Faults tab use — so the list under this
+// button and the values under a code cannot disagree.
 //
 // ⚠️ It arms like an irreversible action even though it only READS, and with more reason
 // than the lifetime read has: this parks the 2 Hz OBD poller for up to twelve seconds — the
@@ -32,8 +39,10 @@ const message = van.state("");
 /**
  * The button, and whatever the last read said.
  *
- * @param {() => { enabled: boolean; gate: { safe: boolean } } | null} readState the sheet's
- *   own /vcu-read state, which already carries the gate and the switch this shares.
+ * @param {() => { enabled: boolean; gate: { safe: boolean } } | null} readState the /vcu-read
+ *   state of whichever page mounts it, which carries the gate and the switch this shares.
+ *   Null until that page has heard from emcool, and the button stays disabled until then:
+ *   a live-looking button before the gate is known would be a claim nobody has checked.
  */
 export function FreezeFrameReadButton(readState) {
   return div(
@@ -45,7 +54,7 @@ export function FreezeFrameReadButton(readState) {
           class: "action",
           // One held Enter must not arm and then fire. See ../lib/arming.js.
           onkeydown: refuseKeyRepeat,
-          disabled: () => busy.val || serviceRefused(readState()),
+          disabled: () => busy.val || readState() === null || serviceRefused(readState()),
           onclick: () => {
             if (armed.val !== ARMED_KEY) {
               arm(ARMED_KEY);
@@ -62,16 +71,20 @@ export function FreezeFrameReadButton(readState) {
         },
         () => {
           if (busy.val) {
-            return "⏳  Reading every stored freeze frame…";
+            return "⏳  Reading every stored fault record…";
           }
-          const refusal = serviceRefusal(readState());
+          const state = readState();
+          if (state === null) {
+            return "…  Asking emcool whether the bike can be read";
+          }
+          const refusal = serviceRefusal(state);
           if (refusal !== null) {
             return refusal;
           }
           if (armed.val === ARMED_KEY) {
             return "⚠  Tap again — this parks the OBD poller for up to 12 s";
           }
-          return "🔎  Read the stored freeze frames";
+          return "🔎  Read the stored fault records";
         }
       ),
       () => (armed.val === ARMED_KEY ? "Confirm read" : "Read")
@@ -79,14 +92,19 @@ export function FreezeFrameReadButton(readState) {
     () => (message.val ? div({ class: "action-note" }, message.val) : div()),
     div(
       { class: "action-note", style: `color:${MUTED}` },
-      "What the VCU recorded when each stored code set. Shown under the codes on the Faults tab."
-    )
+      "What the VCU recorded when each stored code set, listed below — and under each code in the fault report."
+    ),
+    StoredRecords()
   );
 }
 
-/** Clears the last result. Called when the sheet opens, alongside everything else it disarms. */
+/**
+ * Clears the last result and re-fetches what is stored. Called when the sheet or the fault
+ * report opens, alongside everything else they disarm.
+ */
 export function refreshFreezeFrameRead() {
   message.val = "";
+  void loadRecordedValues();
 }
 
 async function performFreezeFrameRead() {
@@ -110,8 +128,12 @@ async function performFreezeFrameRead() {
     console.warn("freeze-frame-read: request failed", error);
     message.val =
       `Could not reach emcool — ${error instanceof Error ? error.message : String(error)}. ` +
-      "The read may have completed anyway; the Faults tab shows the age of what is stored.";
+      "The read may have completed anyway; the list below shows the age of what is stored.";
   } finally {
     busy.val = false;
+    // ⚠️ After EVERY ending, the failed request included: a request that did not come back
+    // may still have stored a reading, and the list is the way to find out. This is also the
+    // Faults tab's copy — one fetched reading — so the opened codes are current too.
+    void loadRecordedValues();
   }
 }
