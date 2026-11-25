@@ -16,6 +16,7 @@ import { AccessExplanation } from "./settings-access.js";
 import { SettingsRecovery } from "./settings-recovery.js";
 import { SettingsRestart } from "./settings-restart.js";
 import { DashboardBluetooth } from "./settings-bluetooth.js";
+import { BleSection } from "./ble-connect.js";
 import { MotorcycleConnection } from "./settings-hub.js";
 import { FirmwareUpdate } from "./firmware-update.js";
 import { ScreenGeometry } from "./screen-geometry.js";
@@ -81,6 +82,8 @@ function SettingsContent(section) {
     case "phone":
       return div(
         h2("This phone"),
+        // The way in before there is a link: Connections needs one to load, this does not.
+        BleSection({ alwaysShowKey: true }),
         SettingsCard("Screen", "Applies immediately on this phone.", ThemeToggle()),
         SettingsCard("Units", "Applies immediately on this phone.", UnitsToggle())
       );
